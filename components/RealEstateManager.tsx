@@ -81,7 +81,7 @@ const getPaymentStatus = (payment: Payment): string => {
   
   if (payment.covered) return 'completed'
   if (dueDate < today) return 'overdue'
-  if (dueDate <= new Date(today.setDate(today.getDate() + 30))) return 'upcoming'
+  if (dueDate <= new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000)) return 'upcoming'
   return 'scheduled'
 }
 
@@ -117,9 +117,9 @@ const PaymentRow: React.FC<{
       </td>
       <td className="text-right p-2">{formatCurrency(payment.amount)}</td>
       <td className="text-right p-2">{formatCurrency(payment.cumulative)}</td>
-      <td className="text-right p-2">{payment.transferred ? formatCurrency(payment.transferred) : '-'}</td>
-      <td className="text-right p-2">{payment.totalCovered ? formatCurrency(payment.totalCovered) : '-'}</td>
-      <td className="text-right p-2">{payment.remaining ? formatCurrency(payment.remaining) : '-'}</td>
+      <td className="text-right p-2">{payment.transferred !== undefined ? formatCurrency(payment.transferred) : '-'}</td>
+      <td className="text-right p-2">{payment.totalCovered !== undefined ? formatCurrency(payment.totalCovered) : '-'}</td>
+      <td className="text-right p-2">{payment.remaining !== undefined ? formatCurrency(payment.remaining) : '-'}</td>
       <td className="text-center p-2">
         <Badge 
           className={
@@ -190,7 +190,7 @@ const ColumnMappingModal: React.FC<{
 
 export default function RealEstateManager() {
   const [units, setUnits] = useState<Units>(initialUnits)
-  const [activeUnit, setActiveUnit] = useState('Unit A')
+  const [activeUnit, setActiveUnit] = useState<string | null>('Unit A')
   const [searchTerm, setSearchTerm] = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
   const [showAnalytics, setShowAnalytics] = useState(false)
@@ -205,7 +205,14 @@ export default function RealEstateManager() {
   const [uploadedHeaders, setUploadedHeaders] = useState<string[]>([])
 
   const activeUnitData = useMemo(() => {
-    const payments = units[activeUnit]?.payments || [];
+    if (!activeUnit || !units[activeUnit]) {
+      return {
+        payments: [],
+        totalAmount: 0,
+        coveredAmount: 0,
+      };
+    }
+    const payments = units[activeUnit].payments;
     const totalAmount = payments.reduce((sum, payment) => sum + payment.amount, 0);
     const coveredAmount = payments
       .filter(payment => payment.covered)
@@ -320,9 +327,9 @@ export default function RealEstateManager() {
 
     setUnits(prevUnits => ({
       ...prevUnits,
-      [activeUnit]: {
-        ...prevUnits[activeUnit],
-        payments: [...prevUnits[activeUnit].payments, ...paymentsWithCumulative],
+      [activeUnit!]: {
+        ...prevUnits[activeUnit!],
+        payments: [...prevUnits[activeUnit!].payments, ...paymentsWithCumulative],
       },
     }));
 
@@ -331,16 +338,32 @@ export default function RealEstateManager() {
 
   const handleAddNewPayment = () => {
     if  (newPayment.milestone && newPayment.dueDate && newPayment.amount !== undefined) {
-      let updatedPayments;
+      let updatedPayments: Payment[];
       if (isEditingPayment && newPaymentOriginal) {
         updatedPayments = activeUnitData.payments.map(payment =>
-          payment === newPaymentOriginal ? { ...newPayment as Payment } : payment
+          payment === newPaymentOriginal
+            ? {
+                ...payment,
+                ...newPayment,
+                amount: newPayment.amount!,
+                covered: newPayment.covered || false,
+              }
+            : payment
         );
       } else {
-        updatedPayments = [...activeUnitData.payments, {
-          ...newPayment as Payment,
-          covered: newPayment.covered || false
-        }];
+        updatedPayments = [
+          ...activeUnitData.payments,
+          {
+            milestone: newPayment.milestone,
+            dueDate: newPayment.dueDate,
+            amount: newPayment.amount!,
+            cumulative: 0, // Will be recalculated
+            covered: newPayment.covered || false,
+            transferred: newPayment.transferred,
+            totalCovered: newPayment.totalCovered,
+            remaining: newPayment.remaining,
+          },
+        ];
       }
 
       // Recalculate cumulative amounts
@@ -352,8 +375,8 @@ export default function RealEstateManager() {
 
       setUnits(prevUnits => ({
         ...prevUnits,
-        [activeUnit]: {
-          ...prevUnits[activeUnit],
+        [activeUnit!]: {
+          ...prevUnits[activeUnit!],
           payments: updatedPayments,
         },
       }));
@@ -373,7 +396,7 @@ export default function RealEstateManager() {
       });
       if (activeUnit === unitName) {
         const remainingUnits = Object.keys(units).filter(u => u !== unitName);
-        setActiveUnit(remainingUnits[0] || '');
+        setActiveUnit(remainingUnits[0] || null);
       }
     }
   };
@@ -389,8 +412,8 @@ export default function RealEstateManager() {
       });
       setUnits(prevUnits => ({
         ...prevUnits,
-        [activeUnit]: {
-          ...prevUnits[activeUnit],
+        [activeUnit!]: {
+          ...prevUnits[activeUnit!],
           payments: paymentsWithUpdatedCumulative,
         },
       }));
@@ -411,6 +434,15 @@ export default function RealEstateManager() {
       alert('Unit already exists.');
     }
   };
+
+  if (!activeUnit) {
+    return (
+      <div className="max-w-7xl mx-auto p-4 space-y-6">
+        <p className="text-lg">No units available. Please add a unit.</p>
+        <Button onClick={handleAddUnit}>Add Unit</Button>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto p-4 space-y-6">
@@ -530,13 +562,17 @@ export default function RealEstateManager() {
           <CardTitle>Payment Schedule</CardTitle>
           <div className="flex flex-wrap gap-4 mt-4">
             <div className="flex-1 min-w-[200px]">
-              <Input
-                placeholder="Search payments..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full"
-                prefix={<Search className="h-4 w-4" />}
-              />
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 transform -translate-y-1/2">
+                  <Search className="h-4 w-4 text-gray-400" />
+                </span>
+                <Input
+                  placeholder="Search payments..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-9"
+                />
+              </div>
             </div>
             <div className="flex gap-2">
               {['all', 'completed', 'upcoming', 'overdue', 'scheduled'].map(status => (
